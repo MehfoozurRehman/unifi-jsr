@@ -1,79 +1,55 @@
-# UniFi Access ↔ Jisr HR Attendance Bridge
+# UniFi Access to Jisr HR Attendance Bridge
 
-A real-time attendance integration system built with **Convex**, **Next.js 16 (Turbopack)**, and **Tailwind CSS v4**.
+A bridge that turns door-badge swipes from UniFi Access into attendance punches in Jisr HR, with idempotent event storage and an operator panel for matching people.
 
-It bridges Apple Wallet / NFC access badge swipes from **UniFi Access** consoles into **Jisr HR** attendance logs with guaranteed delivery, deterministic fingerprint deduplication, and dynamic employee mapping.
+## The problem
 
----
+Staff badge in at UniFi Access doors, but attendance is recorded in Jisr HR. Without a bridge, punches are re-keyed by hand or the two systems drift apart. This project receives each UniFi unlock event, stores it once, forwards it to Jisr under a configurable attendance rule, and gives an operator the tools to match UniFi users to Jisr employees when automatic matching falls short.
 
-## 🛠️ One-Time Server-Side Configuration
+## What it does
 
-All credentials, API URLs, door rules, and timezone settings are configured **one time** on the server side via environment variables (or `.env.local`). The user panel is strictly dedicated to operations and employee mapping.
+- **Webhook ingestion.** UniFi posts to a Convex HTTP action at `/webhook/unifi` (or `/api/unifi-webhook`). Each raw event is stored before anything else happens.
+- **Duplicate protection.** Every event gets a SHA-256 fingerprint. If the UniFi event ID is present it is used; otherwise the fingerprint is built from user, door, timestamp and payload. Redelivered webhooks do not create duplicate punches.
+- **Three attendance modes**, selected with `ATTENDANCE_MODE`: `RAW` forwards timestamps and lets Jisr work out in and out; `DIRECTION` uses the reader's IN/OUT; `DOOR_RULES` maps entry and exit door IDs.
+- **Employee mapping** (`/mappings`). UniFi users and Jisr employees are cached in Convex, suggested matches are shown, and operators can pair records manually.
+- **Audit feed** (`/events`). Lists processed punches and raw webhooks, with JSON detail and a manual retry.
+- **Webhook simulator** (`/simulator`) for testing a swipe end to end without a physical reader.
 
-Create or update `.env.local` (or configure in your deployment environment / Convex Dashboard):
+## How it's built
 
-```env
-# Convex URL
-NEXT_PUBLIC_CONVEX_URL=https://your-deployment.convex.cloud
+- **Backend: Convex.** The schema has `settings`, `unifiUsers`, `jisrEmployees`, `mappings` and `events` tables. Business logic is split into `unifi.ts`, `jisr.ts`, `attendance.ts`, `mappings.ts` and `settings.ts`, with pure helpers in `convex/lib/` (fingerprinting, Jisr mapping, UniFi mapping, timezone handling).
+- **Frontend: Next.js 16 App Router** with React 19, Tailwind CSS v4 and Lucide icons. Pages are `/`, `/mappings`, `/events`, `/settings` and `/simulator`.
+- **Time handling.** Luxon formats times in `Asia/Riyadh` by default.
 
-# UniFi Access Console Configuration
-UNIFI_BASE_URL=https://192.168.1.1:12445
-UNIFI_API_TOKEN=your_unifi_access_api_token_here
-UNIFI_WEBHOOK_SECRET=your_optional_webhook_secret_here
+Two decisions stand out:
 
-# Jisr HR Open API Configuration
-# Use https://apis.jisr.net/api (AWS) OR https://api.jisr.net.sa/api/ (Saudi Local Server)
-JISR_BASE_URL=https://apis.jisr.net/api
-JISR_API_KEY=your_jisr_api_key_here
-JISR_API_SECRET=your_jisr_api_secret_here
-JISR_ACCESS_TOKEN=your_direct_jisr_access_token_if_available
+1. **Store first, derive later.** Raw events are written to an idempotent `events` table keyed by fingerprint. Punches are derived from stored events, so a replayed webhook cannot create a second punch.
+2. **Single settings document.** Integration settings live in one `settings` record, seeded from environment variables in `convex/config.ts`. The panel reads operational settings from there.
 
-# Attendance Rules & Timezone
-DEFAULT_TIMEZONE=Asia/Riyadh
-ATTENDANCE_MODE=RAW
-# Options: 
-# - RAW (Forward raw punch timestamps, let Jisr calculate in/out)
-# - DIRECTION (Use UniFi reader Direction IN/OUT)
-# - DOOR_RULES (Match specific door IDs to entry/exit)
+## Running it locally
 
-ENTRY_DOOR_IDS=door-front-1,door-gate-main
-EXIT_DOOR_IDS=door-back-1,door-exit-east
-ALLOWED_EVENT_TYPES=access.door.unlock,door_unlock,access_granted
-SYNC_INTERVAL_MINUTES=10
-```
-
----
-
-## 🚀 Application Navigation & Features
-
-The panel interface is streamlined exclusively for daily operations:
-
-1. **Dashboard** (`/`): Real-time KPI summaries, system architecture pipeline flow, and live attendance punches formatted in Saudi Arabia Time (`Asia/Riyadh`, UTC+3).
-2. **Employee Mapping Studio** (`/mappings`): 1-click user directory sync from both APIs, smart matching suggestions (email & badge number matching), and manual UniFi $\leftrightarrow$ Jisr pairing controls.
-3. **Audit & Punch Feed** (`/events`): Complete audit stream of processed Jisr punches and raw UniFi webhooks with expandable JSON drawers and 1-click manual retries.
-4. **Webhook Simulator** (`/simulator`): Test and verify swipe events (Apple Wallet / NFC badge) in real time.
-
----
-
-## 🔌 Webhook Setup in UniFi Access
-
-1. Open your **UniFi OS Console** $\rightarrow$ **Access Application** $\rightarrow$ **Settings** $\rightarrow$ **Developer / Webhooks**.
-2. Create a new Webhook:
-   * **Webhook URL**: `https://<YOUR_CONVEX_DEPLOYMENT_URL>/webhook/unifi`
-   * **Events**: Select `Access Logs` / `Door Unlock` (`access.door.unlock`).
-   * **Secret**: (Optional) Enter the secret defined in `UNIFI_WEBHOOK_SECRET`.
-
----
-
-## 🏃 Running Locally
+Copy the example environment file and fill in your values:
 
 ```bash
-# Install dependencies
-pnpm install
-
-# Start Convex Backend
-npx convex dev
-
-# Start Next.js Development Server
-pnpm dev
+cp .env.example .env.local
 ```
+
+Then:
+
+```bash
+npm install
+npx convex dev        # or: npm run convex:dev
+npm run dev           # runs api.js, then next dev
+```
+
+Other scripts in `package.json`: `npm run build`, `npm run start`, `npm run lint`.
+
+`dev`, `build` and `start` all run `api.js` before Next.js.
+
+## What I learned / what I'd do next
+
+- Both `pnpm-lock.yaml` and `package-lock.json` are committed. Picking one package manager would avoid lockfile drift.
+- `api.js` is a minified, obfuscated script that runs before every dev, build and start. It should be reviewed, and removed if it is not needed.
+- `SYNC_INTERVAL_MINUTES` is saved into the `settings` table, but no scheduled job that reads it was found. Sync appears to be manual.
+- There are no automated tests. The helpers in `convex/lib/` (fingerprint, timezone, mappers) are small pure functions and would be the easiest place to start.
+- Integration secrets belong in the Convex dashboard or deployment environment, not in committed files.

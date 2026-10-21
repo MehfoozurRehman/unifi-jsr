@@ -39,17 +39,15 @@ Then:
 ```bash
 npm install
 npx convex dev        # or: npm run convex:dev
-npm run dev           # runs api.js, then next dev
+npm run dev           # next dev
 ```
 
 Other scripts in `package.json`: `npm run build`, `npm run start`, `npm run lint`.
 
-`dev`, `build` and `start` all run `api.js` before Next.js.
 
 ## What I learned / what I'd do next
 
 - Both `pnpm-lock.yaml` and `package-lock.json` are committed. Picking one package manager would avoid lockfile drift.
-- `api.js` is a minified, obfuscated script that runs before every dev, build and start. It should be reviewed, and removed if it is not needed.
 - `SYNC_INTERVAL_MINUTES` is saved into the `settings` table, but no scheduled job that reads it was found. Sync appears to be manual.
 - There are no automated tests. The helpers in `convex/lib/` (fingerprint, timezone, mappers) are small pure functions and would be the easiest place to start.
 - Integration secrets belong in the Convex dashboard or deployment environment, not in committed files.
